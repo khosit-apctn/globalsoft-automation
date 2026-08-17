@@ -80,6 +80,82 @@ public sealed class RunCoordinatorTests
     }
 
     [TestMethod]
+    public async Task Execute_converts_running_workflow_result_to_one_generic_failed_result()
+    {
+        var store = new FakeRunHistoryStore();
+        var coordinator = new RunCoordinator(store, new FakeArtifactDirectoryFactory("artifacts"));
+
+        var result = await coordinator.ExecuteAsync(
+            "rebate",
+            "2026-07",
+            (_, _) => Task.FromResult(RunResult.Create(RunStatus.Running, [], [])),
+            default);
+
+        AssertGenericUnhandledFailure(result, store);
+    }
+
+    [TestMethod]
+    public async Task Execute_converts_undefined_workflow_result_to_one_generic_failed_result()
+    {
+        var store = new FakeRunHistoryStore();
+        var coordinator = new RunCoordinator(store, new FakeArtifactDirectoryFactory("artifacts"));
+
+        var result = await coordinator.ExecuteAsync(
+            "rebate",
+            "2026-07",
+            (_, _) => Task.FromResult(RunResult.Create((RunStatus)999, [], [])),
+            default);
+
+        AssertGenericUnhandledFailure(result, store);
+    }
+
+    [TestMethod]
+    public async Task Execute_with_pre_cancelled_token_still_records_running_invokes_workflow_and_persists_cancelled()
+    {
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var store = new FakeRunHistoryStore();
+        var coordinator = new RunCoordinator(store, new FakeArtifactDirectoryFactory("artifacts"));
+        var workflowInvocations = 0;
+
+        var result = await coordinator.ExecuteAsync(
+            "rebate",
+            "2026-07",
+            (_, token) =>
+            {
+                workflowInvocations++;
+                Assert.AreEqual(cancellation.Token, token);
+                token.ThrowIfCancellationRequested();
+                return Task.FromResult(RunResult.Create(RunStatus.Success, [], []));
+            },
+            cancellation.Token);
+
+        Assert.AreEqual(1, workflowInvocations);
+        Assert.AreEqual(1, store.Created.Count);
+        Assert.AreEqual(RunStatus.Running, store.Created[0].Status);
+        Assert.AreEqual(1, store.Completed.Count);
+        Assert.AreEqual(RunStatus.Cancelled, result.Status);
+        Assert.AreEqual(RunStatus.Cancelled, store.Completed[0].Status);
+    }
+
+    [TestMethod]
+    public async Task Execute_persists_running_with_a_non_cancelable_token()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var store = new FakeRunHistoryStore();
+        var coordinator = new RunCoordinator(store, new FakeArtifactDirectoryFactory("artifacts"));
+
+        _ = await coordinator.ExecuteAsync(
+            "rebate",
+            "2026-07",
+            (_, _) => Task.FromResult(RunResult.Create(RunStatus.Success, [], [])),
+            cancellation.Token);
+
+        Assert.AreEqual(1, store.CreateCancellationTokens.Count);
+        Assert.IsFalse(store.CreateCancellationTokens[0].CanBeCanceled);
+    }
+
+    [TestMethod]
     public async Task Execute_converts_caller_cancellation_and_persists_with_non_cancelled_token()
     {
         using var cancellation = new CancellationTokenSource();
@@ -182,6 +258,41 @@ public sealed class RunCoordinatorTests
     }
 
     [TestMethod]
+    public async Task Execute_propagates_artifact_directory_failure_without_persistence_or_workflow_and_releases_module()
+    {
+        var artifactFailure = new IOException("artifact disk unavailable");
+        var artifactFactory = new FakeArtifactDirectoryFactory("artifacts")
+        {
+            CreateFailure = artifactFailure
+        };
+        var store = new FakeRunHistoryStore();
+        var coordinator = new RunCoordinator(store, artifactFactory);
+        var workflowInvocations = 0;
+
+        var actual = await Assert.ThrowsExactlyAsync<IOException>(() => coordinator.ExecuteAsync(
+            "rebate",
+            "2026-07",
+            (_, _) =>
+            {
+                workflowInvocations++;
+                return Task.FromResult(RunResult.Create(RunStatus.Success, [], []));
+            },
+            default));
+
+        Assert.AreSame(artifactFailure, actual);
+        Assert.AreEqual(0, store.CreateAttempts);
+        Assert.AreEqual(0, workflowInvocations);
+        Assert.AreEqual(0, store.CompleteAttempts);
+        artifactFactory.CreateFailure = null;
+        var retry = await coordinator.ExecuteAsync(
+            "REBATE",
+            "2026-08",
+            (_, _) => Task.FromResult(RunResult.Create(RunStatus.Success, [], [])),
+            default);
+        Assert.AreEqual(RunStatus.Success, retry.Status);
+    }
+
+    [TestMethod]
     public async Task Execute_propagates_completion_failure_once_and_releases_module()
     {
         var completionFailure = new IOException("database unavailable");
@@ -213,13 +324,27 @@ public sealed class RunCoordinatorTests
         services.AddSingleton<IRunHistoryStore>(new FakeRunHistoryStore());
         services.AddSingleton<IArtifactDirectoryFactory>(new FakeArtifactDirectoryFactory("artifacts"));
         services.AddAutomationPlatform();
+        var descriptors = services.Where(service => service.ServiceType == typeof(IRunCoordinator)).ToArray();
         using var provider = services.BuildServiceProvider();
 
         var concrete = provider.GetRequiredService<RunCoordinator>();
         var first = provider.GetRequiredService<IRunCoordinator>();
         var second = provider.GetRequiredService<IRunCoordinator>();
 
+        Assert.AreEqual(1, descriptors.Length);
+        Assert.AreEqual(ServiceLifetime.Singleton, descriptors[0].Lifetime);
         Assert.AreSame(concrete, first);
         Assert.AreSame(first, second);
+    }
+
+    private static void AssertGenericUnhandledFailure(RunResult result, FakeRunHistoryStore store)
+    {
+        Assert.AreEqual(RunStatus.Failed, result.Status);
+        Assert.AreEqual(1, result.Failures.Count);
+        Assert.AreEqual("UNHANDLED", result.Failures[0].ErrorCode);
+        Assert.AreEqual("The workflow failed unexpectedly.", result.Failures[0].Message);
+        Assert.AreEqual(1, store.Completed.Count);
+        Assert.AreEqual(RunStatus.Failed, store.Completed[0].Status);
+        Assert.AreEqual(result.Failures[0], store.Completed[0].Failures.Single());
     }
 }

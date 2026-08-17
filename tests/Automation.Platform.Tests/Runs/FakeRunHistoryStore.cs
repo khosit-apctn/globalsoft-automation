@@ -6,6 +6,8 @@ internal sealed class FakeRunHistoryStore : IRunHistoryStore
 {
     public List<RunRecord> Created { get; } = [];
 
+    public List<CancellationToken> CreateCancellationTokens { get; } = [];
+
     public List<CompletedRun> Completed { get; } = [];
 
     public int CreateAttempts { get; private set; }
@@ -21,6 +23,8 @@ internal sealed class FakeRunHistoryStore : IRunHistoryStore
     public async Task CreateAsync(RunRecord run, CancellationToken cancellationToken = default)
     {
         CreateAttempts++;
+        CreateCancellationTokens.Add(cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
         if (CreateOverride is not null)
         {
             await CreateOverride(run, cancellationToken);

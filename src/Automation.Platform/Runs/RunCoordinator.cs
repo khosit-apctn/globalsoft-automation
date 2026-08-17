@@ -47,13 +47,14 @@ public sealed class RunCoordinator : IRunCoordinator
             var context = new RunContext(runId, moduleId, startedAt, artifactDirectory);
             await _runHistoryStore.CreateAsync(
                 new RunRecord(runId, moduleId, inputLabel, RunStatus.Running, startedAt, null, [], []),
-                cancellationToken);
+                CancellationToken.None);
 
             RunResult result;
             try
             {
                 result = await workflow(context, cancellationToken);
                 ArgumentNullException.ThrowIfNull(result);
+                EnsureTerminalStatus(result.Status);
             }
             catch (OperationCanceledException)
             {
@@ -79,6 +80,18 @@ public sealed class RunCoordinator : IRunCoordinator
         finally
         {
             moduleLock.Release();
+        }
+    }
+
+    private static void EnsureTerminalStatus(RunStatus status)
+    {
+        if (status is not (RunStatus.Success
+            or RunStatus.PartialFailed
+            or RunStatus.Failed
+            or RunStatus.Interrupted
+            or RunStatus.Cancelled))
+        {
+            throw new InvalidOperationException("The workflow returned an invalid result.");
         }
     }
 }
