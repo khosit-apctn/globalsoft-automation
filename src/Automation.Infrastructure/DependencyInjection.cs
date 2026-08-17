@@ -1,5 +1,6 @@
 using Automation.Infrastructure.Runs;
 using Automation.Platform.Contracts.Runs;
+using Automation.Platform.Runs;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -19,6 +20,8 @@ public static class DependencyInjection
 
         services.AddSingleton(_ => new SqliteRunHistoryStore(databasePath));
         services.AddSingleton<IRunHistoryStore>(provider => provider.GetRequiredService<SqliteRunHistoryStore>());
+        services.AddSingleton<ArtifactDirectoryFactory>();
+        services.AddSingleton<IArtifactDirectoryFactory>(provider => provider.GetRequiredService<ArtifactDirectoryFactory>());
         return services;
     }
 }

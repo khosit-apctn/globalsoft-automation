@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Automation.Platform.Contracts\Automation.Platform.Contracts.csproj" />
+    <ProjectReference Include="..\Automation.Platform\Automation.Platform.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

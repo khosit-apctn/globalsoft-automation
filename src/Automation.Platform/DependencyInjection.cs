@@ -1,4 +1,5 @@
 using Automation.Platform.Modules;
+using Automation.Platform.Runs;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Automation.Platform;
@@ -9,6 +10,9 @@ public static class DependencyInjection
     {
         ArgumentNullException.ThrowIfNull(services);
 
-        return services.AddSingleton<IModuleCatalog, ModuleCatalog>();
+        services.AddSingleton<IModuleCatalog, ModuleCatalog>();
+        services.AddSingleton<RunCoordinator>();
+        services.AddSingleton<IRunCoordinator>(provider => provider.GetRequiredService<RunCoordinator>());
+        return services;
     }
 }
