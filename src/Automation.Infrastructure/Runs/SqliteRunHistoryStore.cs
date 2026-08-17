@@ -61,7 +61,8 @@ public sealed class SqliteRunHistoryStore : IRunHistoryStore
                 PRIMARY KEY (run_id, ordinal),
                 FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE
             );
-            CREATE INDEX IF NOT EXISTS ix_runs_module_started ON runs(module_id, started_at_utc_ticks DESC);
+            CREATE INDEX IF NOT EXISTS ix_runs_module_nocase_started
+                ON runs(module_id COLLATE NOCASE, started_at_utc_ticks DESC, run_id DESC);
             """;
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
@@ -92,6 +93,7 @@ public sealed class SqliteRunHistoryStore : IRunHistoryStore
         ArgumentNullException.ThrowIfNull(failures);
         ArgumentNullException.ThrowIfNull(artifacts);
         cancellationToken.ThrowIfCancellationRequested();
+        EnsureCompletionStatus(status);
 
         await using var connection = await OpenConnectionAsync(cancellationToken);
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
@@ -152,7 +154,7 @@ public sealed class SqliteRunHistoryStore : IRunHistoryStore
         command.CommandText = """
             SELECT run_id, module_id, input_label, status, started_at_utc_ticks, ended_at_utc_ticks
             FROM runs
-            WHERE module_id = $moduleId
+            WHERE module_id COLLATE NOCASE = $moduleId
             ORDER BY started_at_utc_ticks DESC, run_id DESC
             LIMIT $limit;
             """;
@@ -314,6 +316,20 @@ public sealed class SqliteRunHistoryStore : IRunHistoryStore
         RunStatus.Cancelled => "CANCELLED",
         _ => throw new ArgumentOutOfRangeException(nameof(status), status, null)
     };
+
+    private static void EnsureCompletionStatus(RunStatus status)
+    {
+        if (status is not (RunStatus.Success
+            or RunStatus.PartialFailed
+            or RunStatus.Failed
+            or RunStatus.Cancelled))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(status),
+                status,
+                "A completed run must use a live-execution terminal status.");
+        }
+    }
 
     private static RunStatus FromDatabaseStatus(string status) => status switch
     {

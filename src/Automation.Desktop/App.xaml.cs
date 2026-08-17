@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Security.Principal;
 using System.Windows;
 using Automation.Desktop.ViewModels;
 using Automation.Infrastructure;
@@ -12,6 +13,7 @@ namespace Automation.Desktop;
 public partial class App : Application
 {
     private IHost? _host;
+    private Mutex? _singleInstanceMutex;
 
     protected override async void OnStartup(StartupEventArgs e)
     {
@@ -19,6 +21,17 @@ public partial class App : Application
 
         try
         {
+            if (!TryAcquireSingleInstanceMutex())
+            {
+                MessageBox.Show(
+                    "โปรแกรมกำลังเปิดใช้งานอยู่แล้ว\nGlobalsoft Automation is already running.",
+                    "Globalsoft Automation",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                Shutdown();
+                return;
+            }
+
             var builder = Host.CreateApplicationBuilder();
             builder.Services.AddAutomationPlatform();
             builder.Services.AddAutomationInfrastructure(builder.Configuration);
@@ -77,7 +90,56 @@ public partial class App : Application
         }
         finally
         {
-            base.OnExit(e);
+            try
+            {
+                ReleaseSingleInstanceMutex();
+            }
+            finally
+            {
+                base.OnExit(e);
+            }
+        }
+    }
+
+    private bool TryAcquireSingleInstanceMutex()
+    {
+        using var identity = WindowsIdentity.GetCurrent();
+        var userSid = identity.User?.Value
+            ?? throw new InvalidOperationException("Unable to identify the current Windows user.");
+        var mutex = new Mutex(
+            initiallyOwned: true,
+            name: $@"Local\GlobalsoftAutomation-{userSid}",
+            createdNew: out var createdNew);
+        if (!createdNew)
+        {
+            mutex.Dispose();
+            return false;
+        }
+
+        _singleInstanceMutex = mutex;
+        return true;
+    }
+
+    private void ReleaseSingleInstanceMutex()
+    {
+        var mutex = _singleInstanceMutex;
+        if (mutex is null)
+        {
+            return;
+        }
+
+        _singleInstanceMutex = null;
+        try
+        {
+            mutex.ReleaseMutex();
+        }
+        catch (Exception exception)
+        {
+            TraceShutdownFailure(exception);
+        }
+        finally
+        {
+            mutex.Dispose();
         }
     }
 

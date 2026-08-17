@@ -1,4 +1,5 @@
 using Automation.Platform.Contracts.Runs;
+using Microsoft.Data.Sqlite;
 
 namespace Automation.Infrastructure.Tests.Runs;
 
@@ -54,6 +55,30 @@ public sealed class SqliteRunHistoryStoreTests
             [new RunArtifact("report", "Report.xlsx", "out/Report.xlsx")]));
 
         StringAssert.Contains(exception.Message, "RUNNING");
+    }
+
+    [TestMethod]
+    [DataRow(RunStatus.Running)]
+    [DataRow(RunStatus.Interrupted)]
+    [DataRow((RunStatus)999)]
+    public async Task Complete_rejects_non_terminal_status_before_opening_database(RunStatus status)
+    {
+        var missingDirectory = Path.Combine(
+            Path.GetTempPath(),
+            $"automation-tests-{Guid.NewGuid():N}",
+            "missing");
+        var store = new Automation.Infrastructure.Runs.SqliteRunHistoryStore(
+            Path.Combine(missingDirectory, "runs.db"));
+
+        var exception = await Assert.ThrowsExactlyAsync<ArgumentOutOfRangeException>(() => store.CompleteAsync(
+            Guid.NewGuid(),
+            status,
+            DateTimeOffset.UtcNow,
+            [],
+            []));
+
+        Assert.AreEqual("status", exception.ParamName);
+        Assert.IsFalse(Directory.Exists(missingDirectory));
     }
 
     [TestMethod]
@@ -115,6 +140,78 @@ public sealed class SqliteRunHistoryStoreTests
 
         Assert.AreEqual(1, saved.Count);
         Assert.AreEqual("new", saved[0].InputLabel);
+    }
+
+    [TestMethod]
+    public async Task List_by_module_matches_module_ids_ignoring_case()
+    {
+        await using var fixture = await SqliteFixture.CreateAsync();
+        var runId = Guid.NewGuid();
+        await fixture.Store.CreateAsync(new RunRecord(
+            runId,
+            "ReBaTe",
+            "mixed-case",
+            RunStatus.Success,
+            fixture.Now,
+            fixture.Now,
+            [],
+            []));
+
+        var saved = await fixture.Store.ListByModuleAsync("rEbAtE", 20);
+
+        Assert.AreEqual(1, saved.Count);
+        Assert.AreEqual(runId, saved[0].RunId);
+        Assert.AreEqual("ReBaTe", saved[0].ModuleId);
+    }
+
+    [TestMethod]
+    public async Task Initialize_adds_nocase_module_index_to_an_existing_database()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"automation-tests-{Guid.NewGuid():N}");
+        var databasePath = Path.Combine(directory, "runs.db");
+        Directory.CreateDirectory(directory);
+
+        try
+        {
+            await using (var connection = new SqliteConnection($"Data Source={databasePath};Pooling=False"))
+            {
+                await connection.OpenAsync();
+                await using var command = connection.CreateCommand();
+                command.CommandText = """
+                    CREATE TABLE runs (
+                        run_id TEXT NOT NULL PRIMARY KEY,
+                        module_id TEXT NOT NULL,
+                        input_label TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        started_at_utc_ticks INTEGER NOT NULL,
+                        ended_at_utc_ticks INTEGER NULL
+                    );
+                    CREATE INDEX ix_runs_module_started
+                        ON runs(module_id, started_at_utc_ticks DESC);
+                    """;
+                await command.ExecuteNonQueryAsync();
+            }
+
+            var store = new Automation.Infrastructure.Runs.SqliteRunHistoryStore(databasePath);
+            await store.InitializeAsync();
+
+            await using var verificationConnection = new SqliteConnection($"Data Source={databasePath};Pooling=False");
+            await verificationConnection.OpenAsync();
+            await using var verification = verificationConnection.CreateCommand();
+            verification.CommandText = """
+                SELECT sql
+                FROM sqlite_master
+                WHERE type = 'index' AND name = 'ix_runs_module_nocase_started';
+                """;
+            var definition = await verification.ExecuteScalarAsync() as string;
+
+            Assert.IsNotNull(definition);
+            StringAssert.Contains(definition, "module_id COLLATE NOCASE");
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
     }
 
     [TestMethod]

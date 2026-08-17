@@ -52,6 +52,7 @@ public sealed class RunCoordinator : IRunCoordinator
             RunResult result;
             try
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 result = await workflow(context, cancellationToken);
                 ArgumentNullException.ThrowIfNull(result);
                 EnsureTerminalStatus(result.Status);
@@ -88,7 +89,6 @@ public sealed class RunCoordinator : IRunCoordinator
         if (status is not (RunStatus.Success
             or RunStatus.PartialFailed
             or RunStatus.Failed
-            or RunStatus.Interrupted
             or RunStatus.Cancelled))
         {
             throw new InvalidOperationException("The workflow returned an invalid result.");

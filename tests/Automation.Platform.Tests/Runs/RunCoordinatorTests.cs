@@ -95,6 +95,21 @@ public sealed class RunCoordinatorTests
     }
 
     [TestMethod]
+    public async Task Execute_converts_interrupted_workflow_result_to_one_generic_failed_result()
+    {
+        var store = new FakeRunHistoryStore();
+        var coordinator = new RunCoordinator(store, new FakeArtifactDirectoryFactory("artifacts"));
+
+        var result = await coordinator.ExecuteAsync(
+            "rebate",
+            "2026-07",
+            (_, _) => Task.FromResult(RunResult.Create(RunStatus.Interrupted, [], [])),
+            default);
+
+        AssertGenericUnhandledFailure(result, store);
+    }
+
+    [TestMethod]
     public async Task Execute_converts_undefined_workflow_result_to_one_generic_failed_result()
     {
         var store = new FakeRunHistoryStore();
@@ -110,7 +125,7 @@ public sealed class RunCoordinatorTests
     }
 
     [TestMethod]
-    public async Task Execute_with_pre_cancelled_token_still_records_running_invokes_workflow_and_persists_cancelled()
+    public async Task Execute_with_pre_cancelled_token_records_running_without_invoking_workflow_and_persists_cancelled()
     {
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
@@ -130,7 +145,7 @@ public sealed class RunCoordinatorTests
             },
             cancellation.Token);
 
-        Assert.AreEqual(1, workflowInvocations);
+        Assert.AreEqual(0, workflowInvocations);
         Assert.AreEqual(1, store.Created.Count);
         Assert.AreEqual(RunStatus.Running, store.Created[0].Status);
         Assert.AreEqual(1, store.Completed.Count);
