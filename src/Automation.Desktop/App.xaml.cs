@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Windows;
 using Automation.Desktop.ViewModels;
 using Automation.Infrastructure;
@@ -38,20 +39,46 @@ public partial class App : Application
         }
         catch (Exception exception)
         {
-            await StopHostAsync();
-            MessageBox.Show(
-                $"ไม่สามารถเปิดโปรแกรมได้\n\n{exception.Message}",
-                "Globalsoft Automation",
-                MessageBoxButton.OK,
-                MessageBoxImage.Error);
-            Shutdown(-1);
+            try
+            {
+                await StopHostAsync();
+            }
+            catch (Exception cleanupException)
+            {
+                TraceShutdownFailure(cleanupException);
+            }
+            finally
+            {
+                try
+                {
+                    MessageBox.Show(
+                        $"ไม่สามารถเปิดโปรแกรมได้\n\n{exception.Message}",
+                        "Globalsoft Automation",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Error);
+                }
+                finally
+                {
+                    Shutdown(-1);
+                }
+            }
         }
     }
 
-    protected override async void OnExit(ExitEventArgs e)
+    protected override void OnExit(ExitEventArgs e)
     {
-        await StopHostAsync();
-        base.OnExit(e);
+        try
+        {
+            Task.Run(StopHostAsync).GetAwaiter().GetResult();
+        }
+        catch (Exception exception)
+        {
+            TraceShutdownFailure(exception);
+        }
+        finally
+        {
+            base.OnExit(e);
+        }
     }
 
     private async Task StopHostAsync()
@@ -65,11 +92,23 @@ public partial class App : Application
         _host = null;
         try
         {
-            await host.StopAsync();
+            await host.StopAsync().ConfigureAwait(false);
         }
         finally
         {
             host.Dispose();
+        }
+    }
+
+    private static void TraceShutdownFailure(Exception exception)
+    {
+        try
+        {
+            Trace.TraceError("Host shutdown cleanup failed: {0}", exception.GetType().FullName);
+        }
+        catch
+        {
+            // Shutdown cleanup failures must not escape the WPF lifecycle.
         }
     }
 }
