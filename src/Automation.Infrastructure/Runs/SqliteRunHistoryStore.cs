@@ -99,11 +99,19 @@ public sealed class SqliteRunHistoryStore : IRunHistoryStore
         await using (var update = connection.CreateCommand())
         {
             update.Transaction = transaction;
-            update.CommandText = "UPDATE runs SET status = $status, ended_at_utc_ticks = $endedAt WHERE run_id = $runId;";
+            update.CommandText = """
+                UPDATE runs
+                SET status = $status, ended_at_utc_ticks = $endedAt
+                WHERE run_id = $runId AND status = $running;
+                """;
             update.Parameters.AddWithValue("$status", ToDatabaseStatus(status));
             update.Parameters.AddWithValue("$endedAt", endedAt.UtcDateTime.Ticks);
             update.Parameters.AddWithValue("$runId", runId.ToString("N"));
-            await update.ExecuteNonQueryAsync(cancellationToken);
+            update.Parameters.AddWithValue("$running", ToDatabaseStatus(RunStatus.Running));
+            if (await update.ExecuteNonQueryAsync(cancellationToken) != 1)
+            {
+                throw new InvalidOperationException($"Run '{runId}' must exist and be RUNNING before it can be completed.");
+            }
         }
 
         await DeleteChildrenAsync(connection, transaction, "run_failures", runId, cancellationToken);
