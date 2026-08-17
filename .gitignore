@@ -1,3 +1,5 @@
 .superpowers/
 .tmp/
 .worktrees/
+bin/
+obj/
